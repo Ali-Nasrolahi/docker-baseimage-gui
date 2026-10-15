@@ -1,0 +1,29 @@
+services:
+  gui:
+    image: ${IMAGE:-localhost/baseimage-gui:ubuntu-26.04-microphone-poc}
+    pull_policy: never
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5800}:5800"
+      - "127.0.0.1:${VNC_PORT:-5900}:5900"
+    environment:
+      APP_NAME: "Audio Redirection Test"
+      DISPLAY_WIDTH: "1280"
+      DISPLAY_HEIGHT: "720"
+      SECURE_CONNECTION: "1"
+      WEB_MICROPHONE: "1"
+      WEB_AUDIO: "1"
+      WEB_TERMINAL: "1"
+      WEB_FILE_MANAGER: "1"
+      WEB_FILE_MANAGER_ALLOWED_PATHS: "/config,/tmp"
+      WEB_NOTIFICATION: "1"
+      WEB_HOST_CLIPBOARD_SYNC: "1"
+    volumes:
+      - test-config:/config
+    # The base image redirects /var/tmp into /config/var/tmp. Keep this
+    # transient runtime state out of the persistent rootless Podman volume.
+    tmpfs:
+      - /config/var/tmp
+    shm_size: "256mb"
+
+volumes:
+  test-config:
