@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+sleep 5
+if [ "$(id -u)" -eq 0 ]; then
+    exec runuser -u app -- "$0" "$@"
+fi
+if [ -z "${DISPLAY:-}" ]; then
+    for socket in /tmp/.X11-unix/X*; do
+        if [ -S "${socket}" ]; then
+            DISPLAY=":${socket##*/X}"
+            export DISPLAY
+            break
+        fi
+    done
+fi
+export PULSE_SERVER=unix:/tmp/pulseaudio.sock
+export PULSE_COOKIE=/tmp/pulseaudio.cookie
+mkdir -p /config/firefox-microphone-profile
+if [ "$#" -eq 0 ]; then
+    set -- about:blank
+fi
+exec /opt/firefox/firefox --no-remote --profile /config/firefox-microphone-profile "$@"

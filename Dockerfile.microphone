@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+# Reuse the published GUI stack; only microphone-specific native code is built.
+ARG GUI_IMAGE=docker.io/jlesage/baseimage-gui:alpine-3.23-v4
+
+FROM --platform=$BUILDPLATFORM docker.io/tonistiigi/xx AS xx
+
+FROM --platform=$BUILDPLATFORM docker.io/library/alpine:3.20 AS pulseaudio
+ARG TARGETPLATFORM
+COPY --from=xx / /
+COPY src/pulseaudio /build-pulseaudio
+# Release archives contain UIDs outside a rootless Podman's user namespace.
+RUN TAR_OPTIONS=--no-same-owner /build-pulseaudio/build.sh && \
+    xx-verify --static /tmp/pulseaudio-install/usr/bin/pulseaudio
+
+FROM --platform=$BUILDPLATFORM docker.io/library/alpine:3.20 AS microphone
+ARG TARGETPLATFORM
+COPY --from=xx / /
+COPY src/microphone/build.sh /tmp/build-microphone/build.sh
+RUN /tmp/build-microphone/build.sh libraries
+COPY src/microphone /tmp/build-microphone
+# Select lld explicitly, including when reusing a compiler's generated configs.
+RUN rm -f /etc/llvm/xx-default.cfg "/usr/bin/$(xx-info triple).cfg" && \
+    XX_CC_PREFER_LINKER=lld xx-clang --setup-target-triple && \
+    /tmp/build-microphone/build.sh binary
+
+FROM ${GUI_IMAGE} AS microphone-base
+COPY --from=pulseaudio /tmp/pulseaudio-install/usr/bin/pulseaudio /opt/base/bin/pulseaudio
+COPY --from=microphone /tmp/build-microphone/microphone /opt/base/bin/microphone
+# Keep published noVNC vendor assets and native GUI tools; overlay our UI/config.
+COPY rootfs/ /
+ENV WEB_MICROPHONE=0
+ARG IMAGE_VERSION=local-microphone
+LABEL org.opencontainers.image.revision=${IMAGE_VERSION}
+
+# This target is exactly the base artifact above plus Firefox and its launcher.
+FROM microphone-base AS firefox
+RUN add-pkg firefox font-dejavu
+# Firefox loads this optional audio client library at runtime on Alpine.
+RUN add-pkg libpulse
+COPY --chmod=755 <<'STARTAPP' /startapp.sh
+#!/bin/sh
+set -eu
+
+# The GUI supervisor starts this as the application user once X is ready.
+mkdir -p /config/firefox-profile
+exec /usr/bin/firefox --no-remote --profile /config/firefox-profile "$@"
+STARTAPP
+ENV APP_NAME="Microphone Firefox Test" \
+    WEB_MICROPHONE=1 \
+    WEB_AUDIO=1 \
+    SECURE_CONNECTION=1
