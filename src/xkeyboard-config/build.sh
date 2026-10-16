@@ -18,8 +18,8 @@ set -u # Treat unset variables as an error.
 XKEYBOARDCONFIG_VERSION=2.41
 
 # Define software download URLs.
-XKEYBOARDCONFIG_URL=https://www.x.org/archive/individual/data/xkeyboard-config/xkeyboard-config-${XKEYBOARDCONFIG_VERSION}.tar.xz
-XKEYBOARDCONFIG_MIRROR_URL=https://xorg.freedesktop.org/archive/individual/data/xkeyboard-config/xkeyboard-config-${XKEYBOARDCONFIG_VERSION}.tar.xz
+XKEYBOARDCONFIG_URL=https://xorg.freedesktop.org/archive/individual/data/xkeyboard-config/xkeyboard-config-${XKEYBOARDCONFIG_VERSION}.tar.xz
+XKEYBOARDCONFIG_MIRROR_URL=https://www.x.org/archive/individual/data/xkeyboard-config/xkeyboard-config-${XKEYBOARDCONFIG_VERSION}.tar.xz
 
 # Set same default compilation flags as abuild.
 export CFLAGS="-Os -fomit-frame-pointer"
