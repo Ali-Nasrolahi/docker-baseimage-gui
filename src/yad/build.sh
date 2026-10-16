@@ -27,7 +27,7 @@ GTK_URL=https://download.gnome.org/sources/gtk+/${GTK_VERSION%.*}/gtk%2B-${GTK_V
 ATK_URL=https://download.gnome.org/sources/atk/${ATK_VERSION%.*}/atk-${ATK_VERSION}.tar.xz
 GDKPIXBUF_URL=https://download.gnome.org/sources/gdk-pixbuf/${GDKPIXBUF_VERSION%.*}/gdk-pixbuf-${GDKPIXBUF_VERSION}.tar.xz
 CAIRO_URL=https://gitlab.freedesktop.org/cairo/cairo/-/archive/${CAIRON_VERSION}/cairo-${CAIRON_VERSION}.tar.bz2
-PIXMAN_URL=https://www.x.org/releases/individual/lib/pixman-${PIXMAN_VERSION}.tar.xz
+PIXMAN_URL=https://xorg.freedesktop.org/archive/individual/lib/pixman-${PIXMAN_VERSION}.tar.xz
 BROTLI_URL=https://github.com/google/brotli/archive/refs/tags/v${BROTLI_VERSION}.tar.gz
 
 # Set same default compilation flags as abuild.

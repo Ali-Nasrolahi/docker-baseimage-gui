@@ -16,7 +16,8 @@ set -u # Treat unset variables as an error.
 FONTCONFIG_VERSION=2.15.0
 
 # Define software download URLs.
-FONTCONFIG_URL=https://www.freedesktop.org/software/fontconfig/release/fontconfig-${FONTCONFIG_VERSION}.tar.gz
+# Mirror of the upstream release; freedesktop.org blocks automated downloads.
+FONTCONFIG_URL=https://distfiles.alpinelinux.org/distfiles/v3.20/fontconfig-${FONTCONFIG_VERSION}.tar.gz
 
 # Set same default compilation flags as abuild.
 export CFLAGS="-Os -fomit-frame-pointer"

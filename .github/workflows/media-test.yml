@@ -1,0 +1,104 @@
+name: Microphone and webcam Alpine images
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - workflow
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Alpine microphone/webcam base and Firefox (amd64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Set image names
+        id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          image="ghcr.io/${OWNER,,}/baseimage-gui-media"
+          version="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "base=${image}:alpine-${version}" >> "$GITHUB_OUTPUT"
+          echo "firefox=${image}:firefox-${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Reuse the published Jlesage GUI image as our binary layer. This needs no
+      # access to upstream's internal registry build cache and never rebuilds
+      # common/TigerVNC/Mesa, even on our first run or a cache miss.
+      - name: Build and publish microphone/webcam base
+        id: base
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.media
+          target: media-base
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.base }}
+          build-args: |
+            IMAGE_VERSION=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=media-alpine-amd64
+            type=gha,scope=microphone-alpine-amd64
+          # Save the expensive native stages even if the browser step fails.
+          cache-to: type=gha,scope=media-alpine-amd64,mode=max
+
+      # Same builder and build graph: the complete base stage above is reused.
+      - name: Build and publish Firefox test desktop
+        id: firefox
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.media
+          target: firefox
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.firefox }}
+          build-args: |
+            IMAGE_VERSION=${{ github.sha }}
+          cache-to: type=gha,scope=media-alpine-amd64,mode=max
+
+      - name: Image summary
+        if: ${{ always() && steps.firefox.outcome == 'success' }}
+        env:
+          BASE_IMAGE: ${{ steps.meta.outputs.base }}
+          FIREFOX_IMAGE: ${{ steps.meta.outputs.firefox }}
+        run: |
+          {
+            echo '### Alpine microphone and webcam images (linux/amd64)'
+            echo
+            echo "Base image: \`${BASE_IMAGE}\`"
+            echo
+            echo "Firefox test desktop: \`${FIREFOX_IMAGE}\`"
+            echo
+            echo 'Open https://localhost:5800 and enable the microphone in Audio and the camera in Webcam.'
+            echo 'Firefox starts automatically inside the desktop.'
+            echo 'Webcam redirection requires an existing writable host v4l2loopback device; the image does not create it.'
+            echo
+            echo '```sh'
+            echo 'export CAM_DEV=/dev/video3 # Use your existing loopback output device.'
+            printf 'podman run --rm -p 127.0.0.1:5800:5800 --shm-size=256m --device "$CAM_DEV:$CAM_DEV" -e "CAM_DEV=$CAM_DEV" %s\n' "$FIREFOX_IMAGE"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

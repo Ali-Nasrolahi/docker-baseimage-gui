@@ -17,9 +17,9 @@ LIBXRANDR_VERSION=1.5.4
 BROTLI_VERSION=1.1.0
 
 # Define software download URLs.
-OPENBOX_URL=http://openbox.org/dist/openbox/openbox-${OPENBOX_VERSION}.tar.xz
+OPENBOX_URL=https://openbox.org/dist/openbox/openbox-${OPENBOX_VERSION}.tar.xz
 PANGO_URL=https://download.gnome.org/sources/pango/${PANGO_VERSION%.*}/pango-${PANGO_VERSION}.tar.xz
-LIBXRANDR_URL=https://www.x.org/releases/individual/lib/libXrandr-${LIBXRANDR_VERSION}.tar.xz
+LIBXRANDR_URL=https://xorg.freedesktop.org/archive/individual/lib/libXrandr-${LIBXRANDR_VERSION}.tar.xz
 BROTLI_URL=https://github.com/google/brotli/archive/refs/tags/v${BROTLI_VERSION}.tar.gz
 
 # Set same default compilation flags as abuild.
