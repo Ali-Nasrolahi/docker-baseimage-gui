@@ -16,7 +16,7 @@ LIBXDAMAGE_VERSION=1.1.6
 
 # Define software download URLs.
 FASTCOMPMGR_URL=https://github.com/tycho-kirchner/fastcompmgr/archive/refs/tags/v${FASTCOMPMGR_VERSION}.tar.gz
-LIBXDAMAGE_URL=https://www.x.org/releases/individual/lib/libXdamage-${LIBXDAMAGE_VERSION}.tar.xz
+LIBXDAMAGE_URL=https://xorg.freedesktop.org/archive/individual/lib/libXdamage-${LIBXDAMAGE_VERSION}.tar.xz
 
 # Set same default compilation flags as abuild.
 export CFLAGS="-Os -fomit-frame-pointer -Wno-expansion-to-defined"

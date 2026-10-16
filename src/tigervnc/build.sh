@@ -39,24 +39,24 @@ LLVM_VERSION=19.1.4
 
 # Define software download URLs.
 TIGERVNC_URL=https://github.com/TigerVNC/tigervnc/archive/v${TIGERVNC_VERSION}.tar.gz
-XSERVER_URL=https://www.x.org/releases/individual/xserver/xorg-server-${XSERVER_VERSION}.tar.gz
+XSERVER_URL=https://xorg.freedesktop.org/archive/individual/xserver/xorg-server-${XSERVER_VERSION}.tar.gz
 
-GMP_URL=https://gmplib.org/download/gmp/gmp-${GMP_VERSION}.tar.xz
+GMP_URL=https://ftp.gnu.org/gnu/gmp/gmp-${GMP_VERSION}.tar.xz
 NETTLE_URL=https://ftpmirror.gnu.org/gnu/nettle/nettle-${NETTLE_VERSION}.tar.gz
 GNUTLS_URL=https://www.gnupg.org/ftp/gcrypt/gnutls/v${GNUTLS_VERSION%.*}/gnutls-${GNUTLS_VERSION}.tar.xz
-LIBXFONT2_URL=https://www.x.org/pub/individual/lib/libXfont2-${LIBXFONT2_VERSION}.tar.gz
-LIBFONTENC_URL=https://www.x.org/releases/individual/lib/libfontenc-${LIBFONTENC_VERSION}.tar.gz
+LIBXFONT2_URL=https://xorg.freedesktop.org/archive/individual/lib/libXfont2-${LIBXFONT2_VERSION}.tar.gz
+LIBFONTENC_URL=https://xorg.freedesktop.org/archive/individual/lib/libfontenc-${LIBFONTENC_VERSION}.tar.gz
 LIBTASN1_URL=https://ftpmirror.gnu.org/gnu/libtasn1/libtasn1-${LIBTASN1_VERSION}.tar.gz
-LIBXSHMFENCE_URL=https://www.x.org/releases/individual/lib/libxshmfence-${LIBXSHMFENCE_VERSION}.tar.gz
-LIBXXF86VM_URL=https://www.x.org/releases/individual/lib/libXxf86vm-${LIBXXF86VM_VERSION}.tar.xz
+LIBXSHMFENCE_URL=https://xorg.freedesktop.org/archive/individual/lib/libxshmfence-${LIBXSHMFENCE_VERSION}.tar.gz
+LIBXXF86VM_URL=https://xorg.freedesktop.org/archive/individual/lib/libXxf86vm-${LIBXXF86VM_VERSION}.tar.xz
 LIBDRM_URL=https://dri.freedesktop.org/libdrm/libdrm-${LIBDRM_VERSION}.tar.xz
-PIXMAN_URL=https://www.x.org/releases/individual/lib/pixman-${PIXMAN_VERSION}.tar.xz
+PIXMAN_URL=https://xorg.freedesktop.org/archive/individual/lib/pixman-${PIXMAN_VERSION}.tar.xz
 BROTLI_URL=https://github.com/google/brotli/archive/refs/tags/v${BROTLI_VERSION}.tar.gz
 MESA_URL=https://archive.mesa3d.org/mesa-${MESA_VERSION}.tar.xz
 LLVM_URL=https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/llvm-project-${LLVM_VERSION}.src.tar.xz
 
-XKEYBOARDCONFIG_URL=https://www.x.org/archive/individual/data/xkeyboard-config/xkeyboard-config-${XKEYBOARDCONFIG_VERSION}.tar.xz
-XKBCOMP_URL=https://www.x.org/releases/individual/app/xkbcomp-${XKBCOMP_VERSION}.tar.xz
+XKEYBOARDCONFIG_URL=https://xorg.freedesktop.org/archive/individual/data/xkeyboard-config/xkeyboard-config-${XKEYBOARDCONFIG_VERSION}.tar.xz
+XKBCOMP_URL=https://xorg.freedesktop.org/archive/individual/app/xkbcomp-${XKBCOMP_VERSION}.tar.xz
 
 # Set same default compilation flags as abuild.
 export CFLAGS="-Os -fomit-frame-pointer -fno-plt"
@@ -201,7 +201,7 @@ TARGET_PKGS="\
 
 log "Installing required Alpine packages..."
 apk --no-cache add $HOST_PKGS
-apk --no-cache --repository http://dl-cdn.alpinelinux.org/alpine/v3.22/community add mold
+apk --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/v3.22/community add mold
 xx-apk --no-cache --no-scripts add $TARGET_PKGS
 
 echo "[binaries]

@@ -15,7 +15,7 @@ set -u # Treat unset variables as an error.
 XKBCOMP_VERSION=1.4.7
 
 # Define software download URLs.
-XKBCOMP_URL=https://www.x.org/releases/individual/app/xkbcomp-${XKBCOMP_VERSION}.tar.xz
+XKBCOMP_URL=https://xorg.freedesktop.org/archive/individual/app/xkbcomp-${XKBCOMP_VERSION}.tar.xz
 
 # Set same default compilation flags as abuild.
 export CFLAGS="-Os -fomit-frame-pointer -Wno-expansion-to-defined"

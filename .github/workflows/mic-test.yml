@@ -2,9 +2,6 @@ name: Microphone image test
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - workflow
 
 permissions:
   contents: read

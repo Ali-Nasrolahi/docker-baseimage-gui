@@ -12,7 +12,7 @@ set -u # Treat unset variables as an error.
 XRDB_VERSION=1.2.2
 
 # Define software download URLs.
-XRDB_URL=https://www.x.org/releases/individual/app/xrdb-${XRDB_VERSION}.tar.xz
+XRDB_URL=https://xorg.freedesktop.org/archive/individual/app/xrdb-${XRDB_VERSION}.tar.xz
 
 # Set same default compilation flags as abuild.
 export CFLAGS="-Os -fomit-frame-pointer -Wno-expansion-to-defined"
