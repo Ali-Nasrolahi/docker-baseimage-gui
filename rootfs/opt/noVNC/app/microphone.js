@@ -1,21 +1,22 @@
 import * as Log from '../core/util/logging.js';
 
-const FRAME_BYTES = 1920;
-const MAX_BUFFERED_BYTES = FRAME_BYTES * 5;
-const FRAME_INTERVAL_MS = 20;
-const MAX_FRAME_AGE_SECONDS = 0.15;
+const MIME_TYPES = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus'];
+const MAX_BUFFERED_BYTES = 32 * 1024;
 const SETUP_TIMEOUT_MS = 10000;
 const CAPTURE_TIMEOUT_MS = 30000;
 const CLOSE_TIMEOUT_MS = 1500;
-const DEVICE_REFRESH_INTERVAL_MS = 2000;
-const WORKLET_URL = new URL('./microphone-worklet.js', import.meta.url);
+const RECORDER_STOP_TIMEOUT_MS = 1000;
 
 function withTimeout(promise, duration, operation) {
     let timer;
     return Promise.race([
         promise,
         new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`${operation} timed out`)), duration);
+            timer = setTimeout(() => {
+                const error = new Error(`${operation} timed out`);
+                error.name = 'TimeoutError';
+                reject(error);
+            }, duration);
         }),
     ]).finally(() => clearTimeout(timer));
 }
@@ -24,7 +25,7 @@ function stopTracks(stream) {
     stream?.getTracks().forEach(track => track.stop());
 }
 
-function microphoneUnavailableReason(media, AudioContextClass) {
+function microphoneUnavailableReason(media, mimeType) {
     if (!window.isSecureContext) {
         return 'Microphone access requires HTTPS (or localhost).';
     }
@@ -32,16 +33,20 @@ function microphoneUnavailableReason(media, AudioContextClass) {
     if (policy?.allowsFeature?.('microphone') === false) {
         return 'Microphone access is blocked for this page. Open the desktop directly in a browser tab, or allow microphone access for the embedded page.';
     }
-    if (!media?.getUserMedia || !AudioContextClass || !window.AudioWorkletNode) {
-        return 'This browser does not support microphone redirection. Try a current version of Firefox, Chrome, or Edge.';
+    if (!media?.getUserMedia || !mimeType) {
+        return 'This browser cannot record Opus microphone audio. Try a browser supporting WebM/Opus or Ogg/Opus.';
     }
     return '';
+}
+
+function supportedMimeType() {
+    if (!window.MediaRecorder?.isTypeSupported) return null;
+    return MIME_TYPES.find(type => MediaRecorder.isTypeSupported(type)) || null;
 }
 
 function captureConstraints(deviceId) {
     const audio = {
         channelCount: { ideal: 1 },
-        sampleRate: { ideal: 48000 },
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
@@ -59,20 +64,20 @@ export default class Microphone {
 
         this.url = url;
         this.reportError = reportError;
+        // Session identity invalidates callbacks from cancelled permissions and recordings.
         this.session = null;
         this.connected = false;
         this.devices = [];
         this.selectedId = '';
         this.devicesRequest = 0;
         this.scanning = false;
-        this.lastDeviceRefresh = 0;
+        // Device switches wait for every previous recording/socket to finish closing.
         this.transportClosed = Promise.resolve();
         this.media = navigator.mediaDevices;
-        this.Context = window.AudioContext || window.webkitAudioContext;
-        this.unavailable = microphoneUnavailableReason(this.media, this.Context);
+        this.mimeType = supportedMimeType();
+        this.unavailable = microphoneUnavailableReason(this.media, this.mimeType);
 
         this.bindEvents();
-        this.renderDevices();
         this.render();
         this.setStatus(this.unavailable || 'Connect to the desktop to use your microphone.');
     }
@@ -97,16 +102,15 @@ export default class Microphone {
         this.media?.addEventListener?.('devicechange', () => {
             void this.refreshDevices({ deviceChange: true });
         });
-        window.addEventListener('pagehide', () => this.stop());
+        window.addEventListener('pagehide', () => this.stop('Microphone off', { graceful: false }));
     }
 
     refreshDevicesOnOpen() {
         if (this.select.disabled || this.scanning) return;
-        if (Date.now() - this.lastDeviceRefresh <= DEVICE_REFRESH_INTERVAL_MS) return;
         void this.refreshDevices({ manual: true });
     }
 
-    setStatus(message, error = false, severity = error ? 'error' : 'info') {
+    setStatus(message, { error = false, severity = error ? 'error' : 'info' } = {}) {
         this.statusError = error;
         this.status.textContent = error ? message : '';
         this.status.classList.toggle('noVNC_hidden', !error);
@@ -118,18 +122,21 @@ export default class Microphone {
     render() {
         const active = Boolean(this.session?.sending);
         const pending = Boolean(this.session && !active);
-        this.button.disabled = !this.connected || Boolean(this.unavailable);
-        this.label.textContent = active ? 'Disable microphone' : pending ? 'Cancel microphone' : 'Enable microphone';
-        this.button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        const disabled = !this.connected || Boolean(this.unavailable);
+
+        this.button.disabled = disabled;
+        this.label.textContent = active ? 'Disable microphone'
+            : pending ? 'Cancel microphone' : 'Enable microphone';
+        this.button.setAttribute('aria-pressed', String(active));
         this.button.title = active
             ? 'Stop sending your microphone to the container'
-            : pending ? 'Cancel microphone access' : 'Send the selected microphone to the container';
+            : pending ? 'Cancel microphone access'
+                : 'Send the selected microphone to the container';
         this.icon.classList.toggle('fa-microphone', active);
         this.icon.classList.toggle('fa-microphone-slash', !active);
 
-        // Source changes are safe after the socket opens: silence can fill the gap.
-        const starting = this.session && this.session.socket?.readyState !== WebSocket.OPEN;
-        this.select.disabled = !this.connected || Boolean(this.unavailable) || Boolean(starting);
+        // Changing devices starts a new recording and requires a new socket.
+        this.select.disabled = disabled || pending;
         this.renderDevices();
     }
 
@@ -137,7 +144,7 @@ export default class Microphone {
         this.connected = connected;
         if (!connected) this.stop('Connect to the desktop to use your microphone.');
         else if (!this.unavailable) void this.refreshDevices();
-        if (this.unavailable) this.setStatus(this.unavailable, true);
+        if (this.unavailable) this.setStatus(this.unavailable, { error: true });
         this.render();
     }
 
@@ -175,23 +182,31 @@ export default class Microphone {
     }
 
     updateDeviceList(allDevices) {
-        const inputs = allDevices.filter(device => device.kind === 'audioinput' && device.deviceId);
-        // Chromium includes aliases for physical microphones.
-        const physical = inputs.filter(device => !['default', 'communications'].includes(device.deviceId));
+        const inputs = allDevices.filter(device =>
+            device.kind === 'audioinput' && device.deviceId);
+
+        // Chromium exposes "default" and "communications" as aliases.
+        const physical = inputs.filter(device =>
+            !['default', 'communications'].includes(device.deviceId));
         const defaultAlias = inputs.find(device => device.deviceId === 'default');
-        const defaultDevice = physical.find(device => defaultAlias?.groupId && device.groupId === defaultAlias.groupId)
+        const defaultDevice = physical.find(device =>
+            defaultAlias?.groupId && device.groupId === defaultAlias.groupId)
             || defaultAlias || physical[0];
-        this.defaultLabel = defaultDevice?.label?.replace(/^default\s*[-:]\s*/i, '') || this.defaultLabel;
+
+        this.defaultLabel = defaultDevice?.label?.replace(/^default\s*[-:]\s*/i, '')
+            || this.defaultLabel;
         this.devices = physical.filter((device, index) =>
             physical.findIndex(other => other.deviceId === device.deviceId) === index);
-        return Boolean(this.selectedId && !this.devices.some(device => device.deviceId === this.selectedId));
+
+        return Boolean(this.selectedId &&
+            !this.devices.some(device => device.deviceId === this.selectedId));
     }
 
     handleMissingDevice(missing, deviceChange) {
         if (deviceChange && missing && this.session?.stream) {
             this.fail(this.session, 'The selected microphone was disconnected or access was revoked. Reconnect a microphone and enable it again.');
         } else if (deviceChange && missing && !this.session) {
-            this.setStatus('The selected microphone is no longer available. Connect a microphone and enable it again.', false, 'warn');
+            this.setStatus('The selected microphone is no longer available. Connect a microphone and enable it again.', { severity: 'warn' });
         }
         if (missing && !this.session) this.selectedId = '';
     }
@@ -208,7 +223,9 @@ export default class Microphone {
     async refreshDevices({ manual = false, deviceChange = false } = {}) {
         if (this.unavailable) return;
         if (!this.media.enumerateDevices) {
-            if (!this.session) this.setStatus('Your browser cannot list microphones. Enable to use the default microphone.');
+            if (!this.session && !this.statusError) {
+                this.setStatus('Your browser cannot list microphones. Enable to use the default microphone.');
+            }
             return;
         }
         const request = ++this.devicesRequest;
@@ -217,7 +234,6 @@ export default class Microphone {
         try {
             const devices = await this.media.enumerateDevices();
             if (request !== this.devicesRequest) return;
-            this.lastDeviceRefresh = Date.now();
             const missing = this.updateDeviceList(devices);
             this.handleMissingDevice(missing, deviceChange);
             this.renderDevices();
@@ -226,14 +242,12 @@ export default class Microphone {
             if (request === this.devicesRequest && this.connected) {
                 Log.Warn(`Microphone device enumeration failed: ${error}`);
                 if (manual) {
-                    this.setStatus('Could not update the microphone list. Try reopening the source selector.', true, 'warn');
+                    this.setStatus('Could not update the microphone list. Try reopening the source selector.', { error: true, severity: 'warn' });
                 }
             }
         } finally {
             if (request === this.devicesRequest) {
                 this.scanning = false;
-                // Preserve the original behavior: permit another refresh on selector open.
-                this.lastDeviceRefresh = 0;
                 this.render();
             }
         }
@@ -254,6 +268,10 @@ export default class Microphone {
             case 'TrackStartError':
             case 'AbortError':
                 return 'The microphone could not be opened. Check that it is connected and not being used by another application, then try again.';
+            case 'TimeoutError':
+                return 'Microphone access timed out. Respond to the browser permission prompt and retry.';
+            case 'NotSupportedError':
+                return 'This browser could not start Opus microphone recording. Try a browser supporting WebM/Opus or Ogg/Opus.';
             case 'SecurityError':
                 return 'Microphone access is disabled by your browser or its security settings. Allow access for this site and try again.';
             default:
@@ -261,40 +279,36 @@ export default class Microphone {
         }
     }
 
-    current(session, captureId = session.captureId) {
-        return this.session === session && session.captureId === captureId;
+    isCurrentSession(session) {
+        return this.session === session;
     }
 
     releaseInput(session) {
-        if (session.source) {
-            try { session.source.disconnect(); } catch (_) { /* Already disconnected. */ }
-            session.source = null;
-        }
         if (session.stream) {
             stopTracks(session.stream);
             session.stream = null;
         }
     }
 
-    watchTrack(session, track, captureId) {
+    watchTrack(session, track) {
         track.addEventListener('ended', () => {
-            if (this.current(session, captureId)) {
+            if (this.isCurrentSession(session)) {
                 this.fail(session, 'Microphone access ended or the device was disconnected. Reconnect a microphone and enable it again.');
             }
         });
         track.addEventListener('mute', () => {
-            if (this.current(session, captureId)) {
-                this.setStatus('The microphone is temporarily muted or unavailable. Check the device and browser settings.', false, 'warn');
+            if (this.isCurrentSession(session)) {
+                this.setStatus('The microphone is temporarily muted or unavailable. Check the device and browser settings.', { severity: 'warn' });
             }
         });
         track.addEventListener('unmute', () => {
-            if (this.current(session, captureId) && session.sending) this.showSending(session);
+            if (this.isCurrentSession(session) && session.sending) this.showSending(session);
         });
     }
 
-    async acquire(session, deviceId, captureId) {
+    async acquire(session, deviceId) {
         const stream = await this.media.getUserMedia(captureConstraints(deviceId));
-        if (!this.current(session, captureId)) {
+        if (!this.isCurrentSession(session)) {
             stopTracks(stream);
             return null;
         }
@@ -304,7 +318,7 @@ export default class Microphone {
         session.deviceLabel = track.label || 'Selected microphone';
         // Selecting "Default" must not pin the resolved physical device.
         if (!deviceId) this.defaultLabel = track.label || this.defaultLabel;
-        this.watchTrack(session, track, captureId);
+        this.watchTrack(session, track);
         // Permission makes labels available; enumeration does not prompt for capture.
         void this.refreshDevices();
         return stream;
@@ -314,209 +328,114 @@ export default class Microphone {
         const muted = session.stream?.getAudioTracks()[0]?.muted;
         this.setStatus(muted
             ? 'The microphone is temporarily muted or unavailable. Check the device and browser settings.'
-            : `Sending: ${session.deviceLabel}`, false, muted ? 'warn' : 'info');
+            : `Sending: ${session.deviceLabel}`, { severity: muted ? 'warn' : 'info' });
     }
 
-    createSession() {
-        return {
-            captureId: 1,
-            sending: false,
-            metrics: { sentFrames: 0, staleFrames: 0, peakBufferedBytes: 0 },
-        };
-    }
-
-    createAudioContext(session) {
-        session.context = new this.Context({ sampleRate: 48000 });
-        session.context.onstatechange = () => {
-            if (this.current(session) &&
-                session.socket?.readyState === WebSocket.OPEN &&
-                session.context.state !== 'running') {
-                this.fail(session, 'Your browser paused microphone audio. Enable the microphone again when the browser is ready.');
-            }
-        };
-        if (!session.context.audioWorklet) {
-            this.fail(session, 'This browser cannot process microphone audio. Try a current version of Firefox, Chrome, or Edge.');
-            return false;
-        }
-        return true;
-    }
-
-    async acquireForStart(session) {
-        try {
-            return await withTimeout(
-                this.acquire(session, this.selectedId, session.captureId),
-                CAPTURE_TIMEOUT_MS, 'Microphone permission/device acquisition');
-        } catch (error) {
-            if (this.current(session)) {
-                const message = error?.message === 'Microphone permission/device acquisition timed out'
-                    ? 'Microphone access timed out. Respond to the browser permission prompt and retry.'
-                    : Microphone.captureError(error);
-                this.fail(session, message, error);
-            }
-            return null;
-        }
-    }
-
-    async prepareAudioProcessing(session, stream, resumed) {
-        this.setStatus('Preparing microphone audio…');
-        session.timer = setTimeout(() => {
-            this.fail(session, 'Microphone audio setup timed out. Refresh the page and try again.');
-        }, SETUP_TIMEOUT_MS);
-        await resumed;
-        if (!this.current(session)) return false;
-        await withTimeout(session.context.audioWorklet.addModule(WORKLET_URL),
-            SETUP_TIMEOUT_MS, 'AudioWorklet module load');
-        if (!this.current(session)) return false;
-
-        session.node = new AudioWorkletNode(session.context, 'web-microphone', {
-            numberOfInputs: 1,
-            numberOfOutputs: 1,
-            outputChannelCount: [1],
+    createRecorder(session, stream) {
+        const recorder = new MediaRecorder(stream, {
+            mimeType: this.mimeType,
+            audioBitsPerSecond: 64000,
         });
-        session.node.port.postMessage({ type: 'reset', captureId: session.captureId });
-        session.source = session.context.createMediaStreamSource(stream);
-        session.node.onprocessorerror = () => {
-            this.fail(session, 'Microphone audio processing stopped. Enable the microphone again to retry.');
+
+        recorder.ondataavailable = ({ data }) => {
+            if (data.size) this.send(session, data);
         };
-        return true;
+        recorder.onerror = event => this.fail(session,
+            'Microphone encoding stopped. Enable the microphone again to retry.', event.error);
+        recorder.onstop = () => this.fail(session,
+            'Microphone recording ended. Enable it again to retry.');
+        return recorder;
     }
 
-    handleSocketOpen(session) {
-        if (!this.current(session)) return;
-        clearTimeout(session.timer);
+    startRecording(session) {
+        if (!this.isCurrentSession(session)) return;
+        clearTimeout(session.connectionTimer);
         try {
-            session.source.connect(session.node);
-            session.node.connect(session.context.destination);
+            session.recorder.start(100);
+            session.sending = true;
+            this.render();
+            this.showSending(session);
         } catch (error) {
-            this.fail(session, 'Microphone audio processing could not start. Enable the microphone again to retry.', error);
-            return;
+            this.fail(session, 'Microphone encoding could not start. Enable it again to retry.', error);
         }
-        session.sending = true;
-        this.render();
-        this.showSending(session);
     }
 
-    handleAudioFrame(session, data) {
-        if (!this.current(session) || !session.sending ||
-            data?.type !== 'pcm' || data.captureId !== session.captureId) return;
-        if (session.context.currentTime - data.time > MAX_FRAME_AGE_SECONDS) {
-            session.metrics.staleFrames++;
-            return;
-        }
-        this.send(session, data.pcm);
-    }
-
-    connectTransport(session) {
-        session.socket = new WebSocket(this.url(), ['binary']);
-        session.socket.onopen = () => this.handleSocketOpen(session);
-        session.node.port.onmessage = ({ data }) => this.handleAudioFrame(session, data);
-        session.socket.onclose = event => this.fail(session, session.sending
-            ? 'The microphone stream disconnected. Enable the microphone again to reconnect.'
-            : 'Could not open the microphone stream. Another desktop session may be using it. Try again.',
+    connect(session) {
+        const socket = new WebSocket(this.url(), ['binary']);
+        session.socket = socket;
+        socket.onopen = () => this.startRecording(session);
+        socket.onclose = event => this.fail(session,
+            session.sending
+                ? 'The microphone stream disconnected. Enable it again to reconnect.'
+                : 'Could not open the microphone stream. Another desktop session may be using it. Try again.',
             `close code=${event.code}, clean=${event.wasClean}`);
-        session.socket.onerror = event => this.fail(session,
-            'Could not connect the microphone stream. Check your connection and sign in again if needed.', event?.type);
+        socket.onerror = () => this.fail(session,
+            'Could not connect the microphone stream. Check your connection and sign in again if needed.');
 
+        session.connectionTimer = setTimeout(() => this.fail(session,
+            'The microphone connection timed out. Check your connection and try again.'),
+            SETUP_TIMEOUT_MS);
         this.setStatus('Connecting the selected microphone…');
-        clearTimeout(session.timer);
-        session.timer = setTimeout(() => {
-            this.fail(session, 'The microphone connection timed out. Check your connection and try again.');
-        }, SETUP_TIMEOUT_MS);
-        this.render();
+    }
+
+    async prepareSession(session) {
+        const stream = await withTimeout(
+            this.acquire(session, this.selectedId),
+            CAPTURE_TIMEOUT_MS,
+            'Microphone permission/device acquisition'
+        );
+        if (!stream || !this.isCurrentSession(session)) return;
+
+        // A fresh recording must not send its container header to the old decoder.
+        await this.transportClosed;
+        if (!this.isCurrentSession(session)) return;
+
+        session.recorder = this.createRecorder(session, stream);
+        this.connect(session);
     }
 
     async start() {
         if (this.session || !this.connected || this.unavailable) return;
-        const session = this.createSession();
+
+        const session = { sending: false, chunks: 0, bytes: 0 };
         this.session = session;
         this.render();
         this.setStatus('Waiting for microphone permission. Allow the selected microphone, or cancel.');
 
         try {
-            if (!this.createAudioContext(session)) return;
-            // Resume inside the user gesture; observe rejections even if cancelled.
-            const resumed = withTimeout(session.context.resume(), SETUP_TIMEOUT_MS, 'AudioContext resume');
-            resumed.catch(() => { });
-
-            const stream = await this.acquireForStart(session);
-            if (!stream || !this.current(session)) return;
-            if (!await this.prepareAudioProcessing(session, stream, resumed)) return;
-
-            // Do not compete with a previous socket that is still closing.
-            await this.transportClosed;
-            if (!this.current(session)) return;
-            this.connectTransport(session);
+            await this.prepareSession(session);
         } catch (error) {
-            this.fail(session, 'Microphone audio could not be started. Refresh the page and try again.', error);
+            this.fail(session, Microphone.captureError(error), error);
         }
     }
 
-    send(session, pcm) {
-        if (!this.current(session) || session.socket?.readyState !== WebSocket.OPEN) return;
-        if (!(pcm instanceof ArrayBuffer) || pcm.byteLength !== FRAME_BYTES) {
-            this.fail(session, 'Invalid microphone audio frame.', 'Unexpected PCM payload size/type');
+    send(session, data) {
+        if ((!this.isCurrentSession(session) && !session.finishing) || session.socket?.readyState !== WebSocket.OPEN) return;
+        if (session.socket.bufferedAmount + data.size > MAX_BUFFERED_BYTES) {
+            // Never drop encoded chunks: subsequent chunks depend on this container.
+            this.fail(session, 'The microphone connection is too slow. Check your network and enable it again.');
             return;
         }
         try {
-            const buffered = session.socket.bufferedAmount;
-            session.metrics.peakBufferedBytes = Math.max(session.metrics.peakBufferedBytes, buffered);
-            if (buffered + pcm.byteLength > MAX_BUFFERED_BYTES) {
-                this.fail(session,
-                    'The microphone connection is too slow. Check your network, then enable the microphone again.',
-                    `buffered=${buffered}, incoming=${pcm.byteLength}, limit=${MAX_BUFFERED_BYTES}`);
-                return;
-            }
-            session.socket.send(pcm);
-            session.metrics.sentFrames++;
+            session.socket.send(data); // Blob ordering is handled by the browser.
+            session.chunks++;
+            session.bytes += data.size;
         } catch (error) {
-            this.fail(session, 'The microphone stream could not send audio. Check your connection and try again.', error);
+            this.fail(session, 'The microphone stream could not send audio. Enable it again to retry.', error);
         }
     }
 
-    startSilence(session) {
-        if (session.silenceTimer) return;
-        const silence = new ArrayBuffer(FRAME_BYTES);
-        session.silenceTimer = setInterval(() => this.send(session, silence), FRAME_INTERVAL_MS);
-    }
-
-    stopSilence(session) {
-        clearInterval(session.silenceTimer);
-        session.silenceTimer = null;
-    }
-
-    async switchMicrophone() {
-        const session = this.session;
-        if (!session || session.socket?.readyState !== WebSocket.OPEN) return;
-        const captureId = ++session.captureId;
-        session.sending = false;
-        this.releaseInput(session);
-        this.render();
-        this.setStatus('Switching microphones. Allow access if prompted, or cancel.');
-        // Keep the socket, sending silence while the replacement source opens.
-        this.startSilence(session);
-
-        try {
-            session.node.port.postMessage({ type: 'reset', captureId });
-            const stream = await this.acquire(session, this.selectedId, captureId);
-            if (!stream || !this.current(session, captureId)) return;
-            session.node.port.postMessage({ type: 'reset', captureId });
-            session.source = session.context.createMediaStreamSource(stream);
-            session.source.connect(session.node);
-            this.stopSilence(session);
-            session.sending = true;
-            this.render();
-            this.showSending(session);
-        } catch (error) {
-            if (this.current(session, captureId)) this.fail(session,
-                error?.name ? Microphone.captureError(error)
-                    : 'Could not switch microphones. Enable it again to retry.', error);
-        }
+    switchMicrophone() {
+        if (!this.session) return;
+        // A new recorder must send fresh WebM/Ogg headers to a new decoder.
+        this.stop('Switching microphones…');
+        return this.start();
     }
 
     fail(session, message, cause = null) {
-        if (!this.current(session)) return;
+        if (!this.isCurrentSession(session)) return;
         Log.Error(`Microphone failure: ${message}${cause ? `; cause=${cause}` : ''}`);
-        this.stop(message, true);
+        this.stop(message, { error: true });
         try {
             this.reportError?.(message);
         } catch (error) {
@@ -526,61 +445,82 @@ export default class Microphone {
     }
 
     closeTransport(socket) {
+        if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
+
         return new Promise(resolve => {
-            if (socket.readyState === WebSocket.CLOSED) {
-                resolve('closed');
-                return;
-            }
-            let settled = false;
-            const finish = outcome => {
-                if (settled) return;
-                settled = true;
+            const finish = () => {
                 clearTimeout(timer);
-                if (outcome !== 'closed') Log.Warn(`Microphone transport shutdown: ${outcome}`);
-                resolve(outcome);
+                socket.removeEventListener('close', finish);
+                resolve();
             };
-            const timer = setTimeout(() => finish('timeout'), CLOSE_TIMEOUT_MS);
-            socket.addEventListener('close', () => finish('closed'), { once: true });
-            try { socket.close(); } catch (error) { finish(`close-error: ${error}`); }
+            const timer = setTimeout(finish, CLOSE_TIMEOUT_MS);
+            socket.addEventListener('close', finish, { once: true });
+
+            try {
+                socket.close();
+            } catch (error) {
+                Log.Warn(`Microphone close failed: ${error}`);
+                finish();
+            }
         });
     }
 
-    releaseAudioProcessing(session) {
-        if (session.node) {
-            session.node.port.onmessage = null;
-            session.node.onprocessorerror = null;
-            try { session.node.disconnect(); } catch (_) { /* Already disconnected. */ }
-        }
-        if (session.context) {
-            session.context.onstatechange = null;
+    finishRecording(session, graceful) {
+        const recorder = session.recorder;
+        if (!recorder || recorder.state === 'inactive') return Promise.resolve();
+
+        // During a graceful stop, allow the final encoded Blob to be sent.
+        session.finishing = graceful;
+        if (!graceful) recorder.ondataavailable = null;
+        recorder.onerror = null;
+        recorder.onstop = null;
+
+        return new Promise(resolve => {
+            const finish = () => {
+                clearTimeout(timer);
+                recorder.removeEventListener('stop', finish);
+                resolve();
+            };
+            const timer = setTimeout(finish, RECORDER_STOP_TIMEOUT_MS);
+            recorder.addEventListener('stop', finish, { once: true });
+
             try {
-                session.context.close().catch(error => Log.Warn(`AudioContext close failed: ${error}`));
+                recorder.stop();
             } catch (error) {
-                Log.Warn(`AudioContext close failed: ${error}`);
+                Log.Warn(`Microphone recorder stop failed: ${error}`);
+                finish();
             }
-        }
+        });
     }
 
-    releaseSession(session) {
-        const { sentFrames, staleFrames, peakBufferedBytes } = session.metrics;
-        Log.Info(`Microphone session ended: sentFrames=${sentFrames}, staleFrames=${staleFrames}, peakBufferedBytes=${peakBufferedBytes}`);
-        clearTimeout(session.timer);
-        this.stopSilence(session);
-        this.releaseInput(session);
+    async closeSession(session, graceful) {
+        clearTimeout(session.connectionTimer);
         if (session.socket) {
+            // Cleanup owns the socket now; ignore its normal event handlers.
             session.socket.onopen = null;
             session.socket.onclose = null;
             session.socket.onerror = null;
-            this.transportClosed = this.closeTransport(session.socket);
         }
-        this.releaseAudioProcessing(session);
+        const finished = this.finishRecording(session, graceful);
+        this.releaseInput(session); // Release the physical microphone before waiting.
+        await finished;
+
+        session.finishing = false;
+        if (session.recorder) session.recorder.ondataavailable = null;
+        Log.Info(`Microphone stopped: chunks=${session.chunks}, bytes=${session.bytes}`);
+        if (session.socket) await this.closeTransport(session.socket);
     }
 
-    stop(message = 'Microphone off', error = false) {
+    stop(message = 'Microphone off', { error = false, graceful = true } = {}) {
         const session = this.session;
-        this.session = null;
-        if (session) this.releaseSession(session);
+        this.session = null; // Pending permissions and callbacks become obsolete immediately.
+        if (session) {
+            const closing = this.closeSession(session, graceful && !error);
+            // Preserve earlier cleanup even if this session was cancelled before connecting.
+            this.transportClosed = Promise.all([this.transportClosed, closing]).then(() => { });
+        }
         this.render();
-        this.setStatus(message, error);
+        this.setStatus(message, { error });
+        return this.transportClosed;
     }
 }
