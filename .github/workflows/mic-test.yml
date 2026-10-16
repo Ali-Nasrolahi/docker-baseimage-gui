@@ -1,7 +1,10 @@
-name: Microphone image test
+name: Microphone Alpine images
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - workflow
 
 permissions:
   contents: read
@@ -12,25 +15,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-common:
-    name: Build common (amd64)
+  build:
+    name: Alpine microphone base and Firefox (amd64)
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
-
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v6
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: Set image name
+      - name: Set image names
         id: meta
         env:
           OWNER: ${{ github.repository_owner }}
         run: |
-          echo "image=ghcr.io/${OWNER,,}/baseimage-gui-build:common-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          image="ghcr.io/${OWNER,,}/baseimage-gui-microphone"
+          version="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "base=${image}:alpine-${version}" >> "$GITHUB_OUTPUT"
+          echo "firefox=${image}:firefox-${version}" >> "$GITHUB_OUTPUT"
 
       - name: Login to GHCR
         uses: docker/login-action@v4
@@ -39,183 +42,59 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build common
+      # Reuse the published Jlesage GUI image as our binary layer. This needs no
+      # access to upstream's internal registry build cache and never rebuilds
+      # common/TigerVNC/Mesa, even on our first run or a cache miss.
+      - name: Build and publish microphone base
+        id: base
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: Dockerfile.common
+          file: Dockerfile.microphone
+          target: microphone-base
           platforms: linux/amd64
           push: true
           provenance: false
-          tags: ${{ steps.meta.outputs.image }}
-          cache-from: type=gha,scope=common-amd64
-          cache-to: type=gha,scope=common-amd64,mode=max
+          tags: ${{ steps.meta.outputs.base }}
+          build-args: |
+            IMAGE_VERSION=${{ github.sha }}
+          cache-from: type=gha,scope=microphone-alpine-amd64
+          # Save the expensive native stages even if the browser step fails.
+          cache-to: type=gha,scope=microphone-alpine-amd64,mode=max
 
-  build:
-    name: Build ${{ matrix.name }} (amd64)
-    needs: build-common
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: alpine-3.23
-            baseimage: jlesage/baseimage:alpine-3.23-v3.11.12
-
-          - name: ubuntu-24.04
-            baseimage: jlesage/baseimage:ubuntu-24.04-v3.11.12
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/setup-buildx-action@v4
-
-      # Jobs have separate runners; the common job's registry login is not shared.
-      - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build image
+      # Same builder and build graph: the complete base stage above is reused.
+      - name: Build and publish Firefox test desktop
+        id: firefox
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile.microphone
+          target: firefox
           platforms: linux/amd64
-          load: true
+          push: true
           provenance: false
-          tags: baseimage-gui:${{ matrix.name }}
+          tags: ${{ steps.meta.outputs.firefox }}
           build-args: |
-            BASEIMAGE_COMMON=${{ needs.build-common.outputs.image }}
-            BASEIMAGE=${{ matrix.baseimage }}
             IMAGE_VERSION=${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.name }}-amd64
-          cache-to: type=gha,scope=${{ matrix.name }}-amd64,mode=max
+          cache-to: type=gha,scope=microphone-alpine-amd64,mode=max
 
-      - name: Test microphone backend with and without playback
-        timeout-minutes: 5
+      - name: Image summary
+        if: ${{ always() && steps.firefox.outcome == 'success' }}
         env:
-          DOCKER_IMAGE: baseimage-gui:${{ matrix.name }}
+          BASE_IMAGE: ${{ steps.meta.outputs.base }}
+          FIREFOX_IMAGE: ${{ steps.meta.outputs.firefox }}
         run: |
-          set -euo pipefail
-          container=mic-smoke
-          app_script=$(mktemp)
-          cleanup() {
-            result=$?
-            trap - EXIT
-            if [ "$result" -ne 0 ]; then
-              docker logs "$container" || true
-              docker exec "$container" sh -c \
-                'cat /config/log/nginx/error.log 2>/dev/null || true' || true
-            fi
-            docker rm -fv "$container" >/dev/null 2>&1 || true
-            rm -f "$app_script"
-            exit "$result"
-          }
-          trap cleanup EXIT
-          # This base image has no application of its own. Keep the supervisor
-          # running while testing the GUI services, without installing a browser.
-          printf '#!/bin/sh\nexec sleep 600\n' > "$app_script"
-          chmod 755 "$app_script"
-
-          for audio in 0 1; do
-            docker run -d --name "$container" \
-              -v "$app_script:/startapp.sh:ro,Z" \
-              -p 127.0.0.1::5800 \
-              -e WEB_MICROPHONE=1 -e WEB_AUDIO="$audio" \
-              -e DISPLAY_WIDTH=640 -e DISPLAY_HEIGHT=480 \
-              "$DOCKER_IMAGE"
-
-            ready=false
-            for attempt in $(seq 1 60); do
-              if docker exec "$container" sh -ec '
-                test -S /tmp/pulseaudio.sock
-                test -S /tmp/vnc-microphone.sock
-                test -p /tmp/vnc-microphone.fifo
-                test -s /var/tmp/nginx/microphone.conf
-              '; then
-                ready=true
-                break
-              fi
-              sleep 1
-            done
-            if [ "$ready" != true ]; then
-              echo 'Microphone backend did not become ready within 60 seconds.' >&2
-              exit 1
-            fi
-
-            port=$(docker port "$container" 5800/tcp | awk -F: 'NR == 1 {print $NF}')
-            export MIC_TEST_PORT="$port" MIC_TEST_AUDIO="$audio"
-            python3 - <<'PY'
-          import base64
-          import hashlib
-          import json
-          import os
-          import socket
-          import struct
-          import time
-          import urllib.request
-
-          port = int(os.environ['MIC_TEST_PORT'])
-          base = f'http://127.0.0.1:{port}'
-          # Local probes must not be sent through a runner's HTTP proxy.
-          http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-          for attempt in range(30):
-              try:
-                  with http.open(base + '/webdata.json', timeout=2) as response:
-                      data = json.load(response)
-                  break
-              except OSError:
-                  if attempt == 29:
-                      raise
-                  time.sleep(1)
-          assert data['microphoneSupport'] is True, data
-          assert data['audioSupport'] is (os.environ['MIC_TEST_AUDIO'] == '1'), data
-          with http.open(base + '/app/microphone-worklet.js', timeout=5) as response:
-              assert b"registerProcessor('web-microphone'" in response.read()
-
-          # Exercise the real NGINX upgrade/Unix-socket route without a browser
-          # or physical microphone. Browser permissions remain a manual test.
-          with socket.create_connection(('127.0.0.1', port), timeout=5) as stream:
-              key = base64.b64encode(os.urandom(16)).decode()
-              request = (
-                  'GET /websockify-microphone HTTP/1.1\r\n'
-                  f'Host: 127.0.0.1:{port}\r\n'
-                  'Upgrade: websocket\r\nConnection: Upgrade\r\n'
-                  f'Sec-WebSocket-Key: {key}\r\n'
-                  'Sec-WebSocket-Version: 13\r\n'
-                  'Sec-WebSocket-Protocol: binary\r\n\r\n'
-              )
-              stream.sendall(request.encode())
-              headers = b''
-              while b'\r\n\r\n' not in headers:
-                  chunk = stream.recv(4096)
-                  assert chunk, 'Connection closed before WebSocket upgrade'
-                  headers += chunk
-                  assert len(headers) < 65536, 'Oversized WebSocket response'
-              assert headers.split(b'\r\n', 1)[0].split()[1] == b'101', headers
-              accept = base64.b64encode(hashlib.sha1(
-                  (key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()
-              ).digest())
-              assert b'sec-websocket-accept: ' + accept.lower() in headers.lower(), headers
-              assert b'sec-websocket-protocol: binary' in headers.lower(), headers
-              for _ in range(30):
-                  pcm = bytes(1920)  # 20 ms, mono s16le at 48 kHz.
-                  mask = os.urandom(4)
-                  payload = bytes(value ^ mask[i % 4] for i, value in enumerate(pcm))
-                  stream.sendall(b'\x82\xfe' + struct.pack('!H', len(pcm)) + mask + payload)
-                  time.sleep(0.02)
-              stream.settimeout(0.2)
-              try:
-                  unexpected = stream.recv(4096)
-              except socket.timeout:
-                  pass  # The microphone transport is intentionally one-way.
-              else:
-                  raise AssertionError(f'Microphone stream closed or sent an unexpected frame: {unexpected!r}')
-          print(f'Microphone backend passed (WEB_AUDIO={os.environ["MIC_TEST_AUDIO"]}).')
-          PY
-            docker rm -fv "$container"
-          done
+          {
+            echo '### Alpine microphone images (linux/amd64)'
+            echo
+            echo "Base image: \`${BASE_IMAGE}\`"
+            echo
+            echo "Firefox test desktop: \`${FIREFOX_IMAGE}\`"
+            echo
+            echo 'Open https://localhost:5800 and enable the microphone in Audio.'
+            echo 'Firefox starts automatically inside the desktop.'
+            echo
+            echo '```sh'
+            echo "podman run --rm -p 127.0.0.1:5800:5800 --shm-size=256m ${FIREFOX_IMAGE}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
