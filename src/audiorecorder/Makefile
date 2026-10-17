@@ -11,8 +11,6 @@ SOURCES = audiorecorder-pulse.cpp
 OBJECTS = $(patsubst %.cpp, %.o, $(SOURCES))
 DEPENDS = $(OBJECTS:.o=.d)
 
-all: $(TARGET)
-
 $(TARGET): $(OBJECTS)
 	$(CXX) $(LDFLAGS) $(OBJECTS) $(LDLIBS) -o $@
 

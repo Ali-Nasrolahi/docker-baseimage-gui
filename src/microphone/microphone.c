@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 // Link and register only the plugins used by the microphone pipeline.
+#ifdef MICROPHONE_STATIC_GSTREAMER
 GST_PLUGIN_STATIC_DECLARE(coreelements);
 GST_PLUGIN_STATIC_DECLARE(playback);
 GST_PLUGIN_STATIC_DECLARE(typefindfunctions);
@@ -22,6 +23,7 @@ GST_PLUGIN_STATIC_DECLARE(audioresample);
 GST_PLUGIN_STATIC_DECLARE(opus);
 GST_PLUGIN_STATIC_DECLARE(ogg);
 GST_PLUGIN_STATIC_DECLARE(matroska);
+#endif
 
 enum {
     DISCONNECT_DRAIN_MS = 250,
@@ -29,8 +31,13 @@ enum {
     FIFO_CHECK_SECONDS = 1,
 };
 
-// Each connection needs fresh demuxer and decoder state. Keep the decoded
-// queue short rather than playing old audio after a network stall.
+/*
+ * fdsrc -> decodebin (decode WebM/Ogg Opus)
+ *       -> audioconvert -> audioresample
+ *       -> convert to raw PCM (S16LE, 48 kHz, mono, interleaved)
+ *       -> bounded 200 ms queue (drop oldest buffers when full)
+ *       -> fdsink (write PCM to the capture FIFO; no clock synchronization)
+ */
 static const char* pipeline_description =
     "fdsrc name=browser timeout=10000000 ! "
     "decodebin caps=audio/x-raw ! audioconvert ! audioresample ! "
@@ -41,8 +48,6 @@ static const char* pipeline_description =
 struct bridge {
     GMainLoop* loop;
 
-    // One recording owns these resources. A closed recording has NULL/zero
-    // pointers and watch IDs, and -1 descriptors. GLib callbacks run on loop.
     GstElement* pipeline;
     guint bus_watch;
     guint client_watch;
@@ -102,9 +107,9 @@ static gboolean client_disconnected(gint fd, GIOCondition condition, gpointer da
 {
     (void)fd;
     (void)condition;
+
     struct bridge* bridge = data;
     bridge->client_watch = 0;
-    // Let EOS flush normally, but never retain ownership behind a blocked sink.
     bridge->drain_watch = g_timeout_add(DISCONNECT_DRAIN_MS, finish_disconnected_client, bridge);
     return G_SOURCE_REMOVE;
 }
@@ -344,6 +349,7 @@ static gboolean request_stop(gpointer data)
 
 static void register_gstreamer_plugins(void)
 {
+#ifdef MICROPHONE_STATIC_GSTREAMER
     GST_PLUGIN_STATIC_REGISTER(coreelements);
     GST_PLUGIN_STATIC_REGISTER(playback);
     GST_PLUGIN_STATIC_REGISTER(typefindfunctions);
@@ -352,6 +358,7 @@ static void register_gstreamer_plugins(void)
     GST_PLUGIN_STATIC_REGISTER(opus);
     GST_PLUGIN_STATIC_REGISTER(ogg);
     GST_PLUGIN_STATIC_REGISTER(matroska);
+#endif
 }
 
 int main(int argc, char** argv)

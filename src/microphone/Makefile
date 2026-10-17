@@ -9,18 +9,29 @@ GST_PACKAGES = gstreamer-1.0 \
     gstaudioresample gstopus \
     gstogg gstmatroska
 
-CPPFLAGS += -MMD $(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES))
+CPPFLAGS += -DMICROPHONE_STATIC_GSTREAMER $(shell $(PKG_CONFIG) --cflags $(GST_PACKAGES))
 CFLAGS = -std=c11 -Wall -Wextra -Werror -Os -fomit-frame-pointer
 LDFLAGS += -static -Wl,--gc-sections -Wl,--strip-all
 LDLIBS = -Wl,--start-group $(shell $(PKG_CONFIG) --static --libs $(GST_PACKAGES)) -Wl,--end-group
 
-.PHONY: all clean
+NATIVE_TARGET = microphone-native
+NATIVE_CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O0 -g3
+NATIVE_LDFLAGS ?=
+
 all: $(TARGET)
 
-$(TARGET): microphone.c
+$(TARGET): microphone.c Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< $(LDLIBS) -o $@
 
-clean:
-	$(RM) $(TARGET) $(TARGET).d
+# Use distro headers and runtime plugins without the production static flags.
+native: $(NATIVE_TARGET)
 
--include $(TARGET).d
+$(NATIVE_TARGET): microphone.c Makefile
+	$(CC) $(NATIVE_CFLAGS) \
+		$(shell $(PKG_CONFIG) --cflags gstreamer-1.0 glib-2.0) \
+		$(NATIVE_LDFLAGS) $< $(shell $(PKG_CONFIG) --libs gstreamer-1.0) -o $@
+
+clean:
+	$(RM) $(TARGET) $(NATIVE_TARGET)
+
+.PHONY: all native clean
