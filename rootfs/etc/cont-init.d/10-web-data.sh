@@ -65,6 +65,13 @@ else
     printf ',\n    "microphoneSupport": false' >> "${WEB_DATA_FILE}"
 fi
 
+# Add webcam support.
+if is-bool-val-true "${WEB_CAM:-0}"; then
+    printf ',\n    "webcamSupport": true' >> "${WEB_DATA_FILE}"
+else
+    printf ',\n    "webcamSupport": false' >> "${WEB_DATA_FILE}"
+fi
+
 # Add web authentication support.
 if is-bool-val-true "${WEB_AUTHENTICATION:-0}"; then
     printf ',\n    "webAuthSupport": true' >> "${WEB_DATA_FILE}"

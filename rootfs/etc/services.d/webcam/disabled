@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+if is-bool-val-true "${WEB_CAM:-0}" && su -s /bin/sh -c "/opt/base/bin/webcam --check" app; then
+    echo false
+else
+    echo true
+fi

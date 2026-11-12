@@ -1030,6 +1030,19 @@ container:
         display: advanced
         required: false
         mask: false
+    - name: WEB_CAM
+      description: >-
+        When set to `1`, enables browser webcam redirection to the host-provided
+        v4l2loopback output device configured by CAM_DEV. Requires HTTPS or localhost
+        and WebCodecs Baseline H.264 encoding. See [Webcam](#webcam).
+      type: public
+      default: 0
+    - name: CAM_DEV
+      description: >-
+        Explicit path to a writable host-provided v4l2loopback output device mapped
+        into the container, such as /dev/video3. Required when WEB_CAM is enabled.
+      type: public
+      default: ""
     - name: WEB_HOST_CLIPBOARD_SYNC
       description: >-
         When set to `1`, enables support for synchronizing the host system

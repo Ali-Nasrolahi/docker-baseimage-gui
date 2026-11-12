@@ -20,6 +20,7 @@ STREAM_CONF=/var/tmp/nginx/stream.conf
 STREAM_LISTEN_CONF=/var/tmp/nginx/stream_listen.conf
 AUDIO_CONF=/var/tmp/nginx/audio.conf
 MICROPHONE_CONF=/var/tmp/nginx/microphone.conf
+WEBCAM_CONF=/var/tmp/nginx/webcam.conf
 AUTH_CONF=/var/tmp/nginx/auth.conf
 FMGR_CONF=/var/tmp/nginx/fmgr.conf
 NOTIF_CONF=/var/tmp/nginx/notif.conf
@@ -92,6 +93,10 @@ fi
 
 if is-bool-val-true "${WEB_MICROPHONE:-0}"; then
     cp -a /opt/base/etc/nginx/include/microphone.conf "${MICROPHONE_CONF}"
+fi
+
+if is-bool-val-true "${WEB_CAM:-0}"; then
+    cp -a /opt/base/etc/nginx/include/webcam.conf "${WEBCAM_CONF}"
 fi
 
 # Handle configuration for web authentication.

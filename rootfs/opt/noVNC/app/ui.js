@@ -21,6 +21,7 @@ import FileManager from "./fileManager.js";
 import NotificationService from "./notificationService.js";
 import Terminal from "./terminal.js";
 import Microphone from "./microphone.js";
+import Webcam from "./webcam.js";
 
 const UI = {
     webData: null,
@@ -48,6 +49,7 @@ const UI = {
 
     audioContext: null,
     microphone: null,
+    webcam: null,
 
     fileManager: null,
 
@@ -160,6 +162,26 @@ const UI = {
                 message => UI.showStatus(message, 'error', 5000));
             document.getElementById('noVNC_microphone_section').classList.remove('noVNC_hidden');
             document.getElementById('noVNC_audio_section').classList.remove('noVNC_hidden');
+        }
+
+        if (UI.webData.webcamSupport) {
+            UI.webcam = new Webcam(
+                {
+                    button: document.getElementById('noVNC_webcam_button'),
+                    status: document.getElementById('noVNC_webcam_status'),
+                    select: document.getElementById('noVNC_webcam_device'),
+                    icon: document.getElementById('noVNC_webcam_icon'),
+                    label: document.getElementById('noVNC_webcam_label'),
+                },
+                () => {
+                    const scheme = UI.getSetting('encrypt') ? 'wss' : 'ws';
+                    const host = UI.getSetting('host');
+                    const port = UI.getSetting('port');
+                    return scheme + '://' + host + (port ? ':' + port : '') +
+                        '/' + UI.buildWebSocketPath('websockify-webcam');
+                },
+                message => UI.showStatus(message, 'error', 5000));
+            document.getElementById('noVNC_webcam_section').classList.remove('noVNC_hidden');
         }
 
         // Web authentication support.
@@ -1273,6 +1295,7 @@ const UI = {
         if (UI.microphone) {
             UI.microphone.setConnected(true);
         }
+        if (UI.webcam) UI.webcam.setConnected(true);
 
         // Start desktop notification.
         if (UI.notificationService) {
@@ -1315,6 +1338,7 @@ const UI = {
         if (UI.microphone) {
             UI.microphone.setConnected(false);
         }
+        if (UI.webcam) UI.webcam.setConnected(false);
 
         // Make sure audio is also stopped.
         if (UI.audioContext) {
